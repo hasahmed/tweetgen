@@ -1,0 +1,163 @@
+#!/usr/local/bin/python3
+import argparse
+from tweet_gather_util import TweetGatherer
+import general_util as gutil
+
+
+
+parser = argparse.ArgumentParser(description='Generate random tweets based on a given twitter handle.')
+parser.add_argument('--username', '-u', dest='username', default='realdonaldtrump',
+                    help='The twitter handle of the person who you would like to generate tweets like (default realdonaldtrump)')
+parser.add_argument('--order', '-o', type=int, default=12,
+                    help='The number of characters to look at previous to the character we\'re generating (default 12)')
+parser.add_argument('--num', '-n', type=int, default=10, metavar="OUTPUT_NUMBER",
+                    help='The number of tweets to output (default 10)')
+parser.add_argument('--ignore_overlapping', '-i', type=bool, default=True,
+                    help='Should generated tweets that overlap more than 70 percent be printed (slows down execution) (default True)')
+parser.add_argument('--debug', '-d', type=bool, default=False,
+                    help='Should the overlapping strings be printed? has no effect if --ignore_overlapping flag is set to False (default False)')
+parser.add_argument('--reject_overlap', '-r', type=int, default=70,
+                    help='If there is MORE percentage of overlapping words than this number, the generated tweet will be rejected'
+                         '. has no effect if --ignore_overlapping flag is set to False (default 70)')
+
+args = parser.parse_args()
+
+
+
+username = args.username # the username that we want all the tweets for
+ORDER = args.order
+NUM_TWEETS_TO_OUTPUT = args.num
+IGNORE_OVERLAPPING = args.ignore_overlapping
+DEBUG = args.debug
+REJECT_OVERLAP = args.reject_overlap
+
+
+
+tweet_gatherer = TweetGatherer() # instance of our tweet gatherer class which verifies twitter app credentials on instanciation
+# trumps_tweets a list where every tweet is a string entry
+usernames_tweets = gutil.clean_tweets(tweet_gatherer.get_tweets_from_disk(username))
+
+all_words_in_corpus = usernames_tweets
+
+# first we create a 'transition matrix' of every possible transition from 5 characters to one character. We
+# use a dictionary rather than a matrix for this purpose
+
+def make_trans_mat(tweets, order=5):
+    trans_mat = {}
+    for tweet in tweets:
+        upto_index = 0 #the index that we have created an entry for up to this point
+        while((upto_index + order) < len(tweet)):
+            chars = tweet[upto_index: upto_index + order] #this will be an order length string
+            next_char = tweet[upto_index + order]
+            upto_index += 1
+
+            if chars not in trans_mat: #if its not in trans_mat, make an entry
+                trans_mat[chars] = {next_char : 1} # new dict for character, and times we've seen it
+            else: #chars IS in trans_mat,
+                if next_char not in trans_mat[chars]:
+                    trans_mat[chars][next_char] = 1 # dict already exists, but character entry doesn't
+                else:
+                    trans_mat[chars][next_char] += 1 # add to the number of times we've seen it
+    return trans_mat
+
+
+def get_prob_mat(trans_mat):
+    prob_mat = {}
+    for char_trans in trans_mat: # loop through all the dictionaries in trans_mat
+        '''{abcde: {a: 1, b: 2}}'''
+        char_prob_mapping = {} # a dictionary for the mappings of characters to probablilities
+        char_counts = trans_mat[char_trans] #easier to type
+        tot = sum(char_counts.values()) # for calculating probablities
+
+        for char in char_counts:
+            char_prob_mapping[char] = char_counts[char] / tot
+        prob_mat[char_trans] = char_prob_mapping
+    return prob_mat
+
+
+def get_next_char(str, prob_mat):
+    char_freqs = prob_mat[str]
+    try:
+        return gutil.weighted_choice(char_freqs)
+    except KeyError:
+        return False
+
+def make_sentance(prob_mat,
+                  order=5,
+                  starting_letter=None,
+                  sentence_max_length=140,
+                  all_words_in_corpus_in_set=all_words_in_corpus,
+                  debug=False,
+                  ignore_overlapping=True,
+                  reject_overlap=REJECT_OVERLAP
+                  ):
+    def output_proc(string):
+        if ignore_overlapping:
+            possible_overlap = gutil.test_sentence_too_much_overlap(string, all_words_in_corpus_in_set, max_overlap_percentage=reject_overlap)
+            if possible_overlap:
+                if debug:
+                    print('---------------------------------')
+                    print(possible_overlap)
+                    print('---------------------------------')
+                return False
+        return gutil.polish_tail(string, all_words_in_corpus_in_set)
+
+    stop_punct = {'! ', '. ', ','}
+    replace_if_last = {",", ":"}
+    unless = {"U.S.", "U.S.A.", "u.s.", "u.s.a."}
+    if starting_letter == None:
+        starting_letter = gutil.get_rand_starting_letters(usernames_tweets, order=order)
+    next_letter = [starting_letter]
+
+    upto_index = 0
+    output = starting_letter
+    for i in range(0, sentence_max_length): # we will a character sentance_max_length times
+        # this checks for a nice stopping point
+        if len(output) >= 1:
+            if output[-1] in stop_punct:
+                if output[-1] in replace_if_last:
+                    output = output[0:-1]
+                    output += "!"
+                break
+        try:
+            next_char = get_next_char(output[upto_index : upto_index + order], prob_mat)
+        except:
+            return output_proc(output)
+        output += next_char
+        upto_index += 1
+    return output_proc(output)
+
+def make_sentance_n_times(prob_mat,
+                          num_times,
+                          order=5,
+                          starting_letter=None,
+                          sentence_max_length=140,
+                          all_words_in_corpus_in_set=all_words_in_corpus,
+                          debug=False,
+                          ignore_overlapping=True,
+                          reject_overlap=REJECT_OVERLAP,
+                          ):
+
+    i = 0
+    while(i < num_times):
+        sentence = make_sentance(prob_mat,
+                                 starting_letter=starting_letter,
+                                 sentence_max_length=sentence_max_length,
+                                 all_words_in_corpus_in_set=all_words_in_corpus_in_set,
+                                 order=order,
+                                 debug=debug,
+                                 reject_overlap=reject_overlap)
+        if sentence:
+            print(sentence)
+            i += 1
+            print("")
+
+tmat = make_trans_mat(usernames_tweets, order=ORDER)
+prob_mat = get_prob_mat(tmat)
+
+make_sentance_n_times(prob_mat,
+                      NUM_TWEETS_TO_OUTPUT,
+                      order=ORDER,
+                      debug=DEBUG,
+                      ignore_overlapping=IGNORE_OVERLAPPING,
+                      reject_overlap=REJECT_OVERLAP)
